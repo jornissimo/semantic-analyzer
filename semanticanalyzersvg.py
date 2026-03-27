@@ -25,6 +25,7 @@ morph_vocab = MorphVocab()
 emb = NewsEmbedding()
 tagger = NewsMorphTagger(emb)
 
+CONTENT_POS = {'NOUN', 'VERB', 'ADJ', 'ADV', 'PROPN', 'AUX'}
 STOP_POS = {'PREP', 'CONJ', 'PRCL', 'INTJ', 'PUNCT', 'ADP', 'CCONJ', 'SCONJ', 'DET'}
 TENSION_POS = {'VERB', 'ADV', 'AUX', 'ADJ'}
 
@@ -62,7 +63,7 @@ def count_syllables_en(word: str) -> int:
 
     return max(1, count)
 
-def export_vss_resonance(data_map):
+def export_resonance(data_map):
     if len(data_map) < 2:
         return
 
@@ -76,15 +77,15 @@ def export_vss_resonance(data_map):
         plt.plot(np.arange(len(syllables)), syllables, color=colors[i % len(colors)], label=f"VSS: {label}", alpha=0.6, linewidth=2)
         plt.fill_between(np.arange(len(syllables)), syllables, color=colors[i % len(colors)], alpha=0.1)
 
-    plt.title("VSS RHYTHM RESONANCE SCAN", color='white', fontsize=14)
+    plt.title("RHYTHM RESONANCE SCAN", color='white', fontsize=14)
     plt.legend(facecolor='#2D2D2D', labelcolor='white')
     plt.axis('off')
-    plt.savefig("vss_resonance.svg", format='svg', bbox_inches='tight', facecolor='#2D2D2D')
+    plt.savefig("resonance.svg", format='svg', bbox_inches='tight', facecolor='#2D2D2D')
     plt.close()
 
-    print(">>> VSS Resonance exported to: vss_resonance.svg")
+    print("Resonance exported to: resonance.svg")
 
-def export_vss_cardio(words_data, path: str):
+def export_cardio(words_data, path: str):
     if not words_data:
         return
     
@@ -104,46 +105,58 @@ def export_vss_cardio(words_data, path: str):
         plt.text(x[i], -0.3, words[i], rotation=45, color='white', fontsize=7, ha='right')
 
     clean_path = path.replace('/', '_').replace('\\', '_')
-    output_name = f"{clean_path}_vss.svg"
+    output_name = f"{clean_path}_scan.svg"
 
     plt.axis('off')
     plt.savefig(output_name, format='svg', bbox_inches='tight', facecolor='#2D2D2D')
     plt.close()
 
-    print(f">>> VSS Cardio exported to: {output_name}")
+    print(f"Cardio exported to: {output_name}")
 
 def process_nlp_multilang(text: str):
     doc = Doc(text)
-    doc.segment(segmenter)
-    doc.tag_morph(tagger)
-    
+    doc.segment(segmenter); doc.tag_morph(tagger)
     words_data, meaningful_lemmas = [], []
+    content_words_count = 0
+    total_tokens = 0
+    
     for token in doc.tokens:
+        if token.pos == 'PUNCT': continue
+        total_tokens += 1
+        
         is_ru = bool(re.search('[а-яА-Я]', token.text))
         if is_ru:
             token.lemmatize(morph_vocab)
             lemma, syls = token.lemma, count_syllables_ru(token.text)
         else:
             lemma, syls = token.text.lower(), count_syllables_en(token.text)
-        if token.pos != 'PUNCT' and syls > 0:
+        
+        # Semantic Density
+        if token.pos in CONTENT_POS:
+            content_words_count += 1
+            
+        if syls > 0:
             words_data.append({'word': token.text, 'syllables': syls, 'is_tension': token.pos in TENSION_POS})
         if token.pos not in STOP_POS and len(token.text) > 1:
             meaningful_lemmas.append(lemma)
             
     tension = sum(1 for d in words_data if d['is_tension']) / len(words_data) if words_data else 0
-    return meaningful_lemmas, tension, words_data
+    density = content_words_count / total_tokens if total_tokens > 0 else 0
+    return meaningful_lemmas, tension, words_data, density
 
 def analyze(path: str):
-    global word_count, word_stats, all_rhythm_lines
+    global word_count, word_stats, all_rhythm_lines, all_files_data
     file_tension_accum = []
     file_all_words_data = []
+    file_density_accum = []
+    
     try:
         with open(path, "r", encoding="utf-8") as file:
             for line in file:
                 clean_line = line.strip()
                 if not clean_line: continue
                 
-                lemmas, t_score, w_data = process_nlp_multilang(clean_line)
+                lemmas, t_score, w_data, d_score = process_nlp_multilang(clean_line)
                 
                 # Stat
                 for lemma in lemmas:
@@ -153,27 +166,32 @@ def analyze(path: str):
                 if w_data:
                     file_all_words_data.extend(w_data)
                     file_tension_accum.append(t_score)
+                    file_density_accum.append(d_score)
                     # Save rhytm of the line
                     all_rhythm_lines.append([d['syllables'] for d in w_data])
         
         if file_all_words_data:
             all_files_data[path] = file_all_words_data
-            export_vss_cardio(file_all_words_data, path)
+            export_cardio(file_all_words_data, path)
             
-        return sum(file_tension_accum)/len(file_tension_accum) if file_tension_accum else 0
+        avg_t = sum(file_tension_accum)/len(file_tension_accum) if file_tension_accum else 0
+        avg_d = sum(file_density_accum)/len(file_density_accum) if file_density_accum else 0
+        return avg_t, avg_d
+
     except FileNotFoundError: 
         print(f"File not found: {path}", file=sys.stderr)
     except Exception as e: 
         print(f"Unable to read file: {path}: {e}")
-    return 0
+    return 0, 0
 
 def main(args: list[str]):
     if not args:
-        print("no input files", file=sys.stderr); return
-    tension_scores = [analyze(p) for p in args]
+        print("No input files", file=sys.stderr); return
+    
+    results = [analyze(p) for p in args]
     if word_count == 0: return
     
-    export_vss_resonance(all_files_data)
+    export_resonance(all_files_data)
     
     stats = dict(sorted(word_stats.items(), key=lambda item: item))
     entropy, prob_sum = 0, 0
@@ -191,6 +209,9 @@ def main(args: list[str]):
     ttr = unique_count / word_count
     ent_max = math.log2(unique_count) if unique_count > 1 else 1
     
+    avg_tension = sum(r[0] for r in results) / len(results)
+    avg_density = sum(r[1] for r in results) / len(results)
+
     print(f"\nWord count: {word_count}")
     print(f"Unique count: {unique_count}")
     print(f"TTR: {ttr}")
@@ -199,7 +220,8 @@ def main(args: list[str]):
     print(f"Max entropy: {ent_max}")
     print(f"Normalized entropy: {entropy/ent_max*100:.4f}%")
     print(f"Bpse: {entropy * ttr}")
-    print(f"Lexical tension (VSS Response): {sum(tension_scores)/len(tension_scores):.4f}")
+    print(f"Lexical tension (Response): {avg_tension:.4f}")
+    print(f"Semantic Density: {avg_density:.4f}")
 
 if __name__ == "__main__":
     main(sys.argv[1:])
