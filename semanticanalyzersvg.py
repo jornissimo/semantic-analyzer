@@ -117,13 +117,12 @@ def process_nlp_multilang(text: str):
     doc = Doc(text)
     doc.segment(segmenter); doc.tag_morph(tagger)
     words_data, meaningful_lemmas = [], []
-    content_words_count = 0
-    total_tokens = 0
+    content_words_count, total_tokens = 0, 0
+    nouns_count, verbs_count = 0, 0 # Abstractness Index
     
     for token in doc.tokens:
         if token.pos == 'PUNCT': continue
         total_tokens += 1
-        
         is_ru = bool(re.search('[а-яА-Я]', token.text))
         if is_ru:
             token.lemmatize(morph_vocab)
@@ -131,9 +130,9 @@ def process_nlp_multilang(text: str):
         else:
             lemma, syls = token.text.lower(), count_syllables_en(token.text)
         
-        # Semantic Density
-        if token.pos in CONTENT_POS:
-            content_words_count += 1
+        if token.pos == 'NOUN': nouns_count += 1
+        if token.pos == 'VERB': verbs_count += 1
+        if token.pos in CONTENT_POS: content_words_count += 1
             
         if syls > 0:
             words_data.append({'word': token.text, 'syllables': syls, 'is_tension': token.pos in TENSION_POS})
@@ -142,13 +141,17 @@ def process_nlp_multilang(text: str):
             
     tension = sum(1 for d in words_data if d['is_tension']) / len(words_data) if words_data else 0
     density = content_words_count / total_tokens if total_tokens > 0 else 0
-    return meaningful_lemmas, tension, words_data, density
+    # Abstractness Index, relationship of nouns to verbs 
+    # > 1.0 - abstract/static, < 1.0 - dynamic.
+    abstractness = nouns_count / verbs_count if verbs_count > 0 else nouns_count
+    return meaningful_lemmas, tension, words_data, density, abstractness
 
 def analyze(path: str):
     global word_count, word_stats, all_rhythm_lines, all_files_data
     file_tension_accum = []
     file_all_words_data = []
     file_density_accum = []
+    f_abstract = []
     
     try:
         with open(path, "r", encoding="utf-8") as file:
@@ -156,7 +159,7 @@ def analyze(path: str):
                 clean_line = line.strip()
                 if not clean_line: continue
                 
-                lemmas, t_score, w_data, d_score = process_nlp_multilang(clean_line)
+                lemmas, t_score, w_data, d_score, a_score = process_nlp_multilang(clean_line)
                 
                 # Stat
                 for lemma in lemmas:
@@ -167,6 +170,7 @@ def analyze(path: str):
                     file_all_words_data.extend(w_data)
                     file_tension_accum.append(t_score)
                     file_density_accum.append(d_score)
+                    f_abstract.append(a_score)
                     # Save rhytm of the line
                     all_rhythm_lines.append([d['syllables'] for d in w_data])
         
@@ -176,13 +180,14 @@ def analyze(path: str):
             
         avg_t = sum(file_tension_accum)/len(file_tension_accum) if file_tension_accum else 0
         avg_d = sum(file_density_accum)/len(file_density_accum) if file_density_accum else 0
-        return avg_t, avg_d
+        avg_a = sum(f_abstract)/len(f_abstract) if f_abstract else 0
+        return avg_t, avg_d, avg_a
 
     except FileNotFoundError: 
         print(f"File not found: {path}", file=sys.stderr)
     except Exception as e: 
         print(f"Unable to read file: {path}: {e}")
-    return 0, 0
+    return 0, 0, 0
 
 def main(args: list[str]):
     if not args:
@@ -208,9 +213,16 @@ def main(args: list[str]):
     unique_count = len(stats)
     ttr = unique_count / word_count
     ent_max = math.log2(unique_count) if unique_count > 1 else 1
-    
     avg_tension = sum(r[0] for r in results) / len(results)
     avg_density = sum(r[1] for r in results) / len(results)
+    avg_abstract = sum(r[2] for r in results) / len(results)
+
+    # Lexical Density
+    avg_words_per_sentence = word_count / len(all_rhythm_lines) if all_rhythm_lines else 0
+    avg_syl_per_word = sum(sum(s) for s in all_rhythm_lines) / word_count if word_count else 0
+
+    # Readabulity (RU adopt)
+    readability = 206.835 - (1.3 * avg_words_per_sentence) - (60.1 * avg_syl_per_word)
 
     print(f"\nWord count: {word_count}")
     print(f"Unique count: {unique_count}")
@@ -222,6 +234,9 @@ def main(args: list[str]):
     print(f"Bpse: {entropy * ttr}")
     print(f"Lexical tension (Response): {avg_tension:.4f}")
     print(f"Semantic Density: {avg_density:.4f}")
+    print(f"Readability Score: {readability:.2f} (lower is harder)")
+    print(f"LDI (Lexical Diversity Index): {unique_count / word_count:.4f}")
+    print(f"Abstractness Index (Noun/Verb): {avg_abstract:.4f}")
 
 if __name__ == "__main__":
     main(sys.argv[1:])
